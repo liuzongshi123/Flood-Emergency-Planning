@@ -24,7 +24,8 @@ class NearestITN:
             nodes.append(coords)
         for n, node in enumerate(nodes):
             self.idx.insert(n, node, node_names[n])
+        return self.idx
 
-    def nearest_node(self, test_point):
-        for res in self.idx.nearest(test_point, 1, True):
+    def nearest_node(self, test_point, idx):
+        for res in idx.nearest(test_point, 1, True):
             return res.object
