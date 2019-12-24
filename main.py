@@ -1,7 +1,7 @@
 import numpy as np
 from osgeo import gdal
 import rasterio
-from rasterio.windows import Window
+import rasterio.mask
 from rasterio import plot
 from shapely.geometry import Point, Polygon, LineString
 import matplotlib.pyplot as plt
@@ -22,30 +22,22 @@ class UserInput:
         self.shape = shape
 
     def within_mbr(self):
-        mbr = Polygon([(430000, 80000), (430000, 95000), (465000, 95000), (465000, 8000)])  # create mbr shape
+        mbr = Polygon([(425000, 75000), (470000, 75000), (470000, 100000), (425000, 100000)])  # create mbr shape
 
         while True:  # to test if point is within mbr and island shape
             if self.shape.contains(self.pt).all() & mbr.contains(self.pt):
                 break  # loop stops if point is within mbr and within island
             else:
-                print("Input coordinate outside box. Application quitting.")
+                print("Input coordinate outside Isle of Wight. Application quitting.")
                 exit()  # app will quit if point is outside mbr and outside island
 
 
 class HighestPoint:
-    def get_mbr(self, coordinate):
+    def get_5kmbuffer(self, coordinate):
         point = Point(coordinate)
-        buffer = point.buffer(5000)
-        mbr = buffer.bounds
-        return mbr
-
-    def xy_to_rowcol(self, extend, coordinate):
-        a = np.array([[extend[1], extend[2]], [extend[4], extend[5]]])
-        b = np.array([coordinate[0] - extend[0], coordinate[1] - extend[3]])
-        row_col = np.linalg.solve(a, b)
-        row = int(np.floor(row_col[1]))
-        col = int(np.floor(row_col[0]))
-        return row, col
+        boundary = Polygon([(425000, 75000), (470000, 75000), (470000, 100000), (425000, 100000)])
+        buffer = point.buffer(5000).intersection(boundary)
+        return buffer
 
     def row_to_xy(self, extend, row, col):
         x = extend[0] + col * extend[1] + row * extend[2]
@@ -53,22 +45,14 @@ class HighestPoint:
         point = (x, y)
         return point
 
-    def find_hightest_point(self, extend, elevation, mbr):
-        left_bottom = (mbr[0], mbr[1])
-        top_right = (mbr[2], mbr[3])
-        row_stop, col_start = self.xy_to_rowcol(extend, left_bottom)
-        row_start, col_stop = self.xy_to_rowcol(extend, top_right)
-        with elevation as src:
-            w = src.read(1, window=Window.from_slices(slice(row_start, row_stop), slice(col_start, col_stop)))
-        m = np.argmax(w)
-        row, col = divmod(m, w.shape[1])
-        return row, col
-
-    def get_coordinate(self, extend, point, row, col):
-        point_row, point_col = self.xy_to_rowcol(extend, point)
-        coordinate_row = point_row + row - 1000
-        coordinate_col = point_col + col - 1000
-        coordinate = self.row_to_xy(extend, coordinate_row, coordinate_col)
+    def find_hightest_point(self, extend, filepath, filename, buffer):
+        file = filepath + "/" + filename
+        shape = [buffer.__geo_interface__]
+        with rasterio.open(file) as src:
+            out_image, out_transform = rasterio.mask.mask(src, shape, crop=False)
+        m = np.argmax(out_image)
+        row, col = divmod(m, out_image.shape[2])
+        coordinate = self.row_to_xy(extend, row, col)
         return coordinate
 
 
@@ -190,9 +174,9 @@ def main():
     test.within_mbr()  # call function to test if point is within
     start_point = (x, y)
 
-    start_point_mbr = find_highest.get_mbr(start_point)
-    highest_row, highest_col = find_highest.find_hightest_point(extend, elevation, start_point_mbr)
-    highest_point = find_highest.get_coordinate(extend, start_point, highest_row, highest_col)
+    start_point_buffer = find_highest.get_5kmbuffer(start_point)
+    highest_point = find_highest.find_hightest_point(extend, filepath_elevation, filename_elevation,
+                                                     start_point_buffer)
 
     idx = find_itn.nodes_index(itn)
     start_node = find_itn.nearest_node(start_point, idx)
@@ -201,3 +185,48 @@ def main():
     network_unweighted = find_path.build_network(itn)
     network_weighted = find_path.add_weight(extend, itn, network_unweighted, height)
     path = find_path.shortest_path(start_node, end_node, network_weighted)
+
+    mersea_itn_json = "C:/Users/18156/Desktop/Python作业/Material/Material/itn/solent_itn.json"
+    with open(mersea_itn_json, "r") as f:
+        mersea_itn = json.load(f)
+    mersea_background = "C:/Users/18156/Desktop/Python作业/Material/Material/background/raster-50k_2724246.tif"
+    road_links = mersea_itn["roadlinks"]
+    links = []  # this list will be used to populate the feature id (fid) column
+    geom = []  # this list will be used to populate the geometry column
+
+    first_node = path[0]
+    for node in path[1:]:
+        link_fid = network_weighted.edges[first_node, node]['fid']
+        links.append(link_fid)
+        geom.append(LineString(road_links[link_fid]['coords']))
+        first_node = node
+
+    shortest_path_gpd = gpd.GeoDataFrame({"fid": links, "geometry": geom})
+
+    background = rasterio.open(mersea_background)
+    back_array = background.read(1)
+    palette = np.array([value for key, value in background.colormap(1).items()])
+    background_image = palette[back_array]
+    bounds = background.bounds
+    extent = [bounds.left, bounds.right, bounds.bottom, bounds.top]
+    display_extent = [bounds.left + 200, bounds.right - 200, bounds.bottom + 600, bounds.top - 600]
+
+    elevation = rasterio.open("Material/Material/elevation/SZ.asc")
+    elevation_array = elevation.read(1)
+
+    fig = plt.figure(figsize=(10, 10), dpi=300)
+    ax = fig.add_subplot(1, 1, 1, projection=ccrs.OSGB())
+
+    ax.imshow(background_image, origin="upper", extent=extent, zorder=0)
+    rasterio.plot.show(elevation, origin="upper", cmap="summer", extent=extent, ax=ax, zorder=1, alpha=0.85)
+
+    shortest_path_gpd.plot(ax=ax, edgecolor="blue", linewidth=1, zorder=2)
+
+    ax.set_extent(display_extent, crs=ccrs.OSGB())
+
+    plt.show()
+
+
+if __name__ == '__main__':
+   main()
+
