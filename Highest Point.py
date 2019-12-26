@@ -2,13 +2,15 @@ import numpy as np
 import rasterio
 from shapely.geometry import Point, Polygon
 import rasterio.mask
-from osgeo import gdal
 
 
 class HighestPoint:
-    def get_5kmbuffer(self, coordinate):
+
+    def get_5kmbuffer(self, coordinate, background):
         point = Point(coordinate)
-        boundary = Polygon([(425000, 75000), (470000, 75000), (470000, 100000), (425000, 100000)])
+        bounds = background.bounds
+        boundary = Polygon([(bounds.left, bounds.bottom), (bounds.right, bounds.bottom),
+                            (bounds.right, bounds.top), (bounds.left, bounds.top)])
         buffer = point.buffer(5000).intersection(boundary)
         return buffer
 
