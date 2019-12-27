@@ -13,6 +13,8 @@ import cartopy.crs as ccrs
 import json
 from rtree import index
 from collections import OrderedDict
+import os
+import argparse
 
 
 class UserInput:
@@ -23,15 +25,17 @@ class UserInput:
         self.pt = Point(self.x, self.y)  # xy into shapely point
         self.shape = shape
 
+    # To test if point is within island shape
+    # Programme will ask you to enter location again if entered point is outside island
     def within_mbr(self):
-        while True:  # to test if point is within mbr and island shape
-            if self.shape.contains(self.pt).all():
-                break  # loop stops if point is within mbr and within island
-            elif self.shape.touches(self.pt).all():
-                break
-            else:
-                print("Input coordinate outside Isle of Wight. Application quitting.")
-                exit()  # app will quit if point is outside island
+        while not self.shape.contains(self.pt).all():
+            if not self.shape.touches(self.pt).all():
+                print("Input coordinate outside Isle of Wight. Application quitting.\nPlease Try Again!")
+                x = float(input("Enter location (as British National Grid coordinate)\nEasting: "))
+                y = float(input("Northing: "))
+                self.x = x
+                self.y = y
+                self.pt = Point(self.x, self.y)
 
 
 class HighestPoint:
@@ -55,18 +59,38 @@ class HighestPoint:
         return point
 
     # Define a function to find the highest point within 5km radius
-    def find_hightest_point(self, extend, filepath, filename, buffer):
+    def find_hightest_point(self, extend, filepath, filename, buffer, start_point):
         file = filepath + "/" + filename
         shape = [buffer.__geo_interface__]
         # Use rasterio.mask function to clip array based on vector boundary
         # (Source: https://rasterio.readthedocs.io/en/latest/topics/masking-by-shapefile.html)
         with rasterio.open(file) as src:
             out_image, out_transform = rasterio.mask.mask(src, shape, crop=False)
-        # Use np.argmax() function to get one-dimensional index of maximum value in array
-        # Use divmod() function to get row and column location
-        # (Source: https://murphypei.github.io/blog/2018/08/python-max-index.html)
-        m = np.argmax(out_image)
-        row, col = divmod(m, out_image.shape[2])
+            out_image = out_image.reshape(out_image.shape[1], out_image.shape[2])
+        # Use np.where() and np.max() function to get index of maximum value in array
+        a = np.where(out_image == np.max(out_image))
+        # Determine the nearest highest point if the number of highest point is more than 1
+        # Calculate Euclidean distance
+        length_a = len(a[0])
+        if length_a == 1:
+            row, col = a[0][0], a[1][0]
+        if length_a > 1:
+            for i in range(length_a):
+                row_x = a[0][i]
+                col_y = a[1][i]
+                x = self.row_to_xy(extend, row_x, col_y)[0]
+                y = self.row_to_xy(extend, row_x, col_y)[1]
+                length = (x - float(start_point[0])) ** 2 + (y - float(start_point[1])) ** 2
+                distance = np.sqrt(length)
+                if i == 0:
+                    shortest = distance
+                    row = row_x
+                    col = col_y
+                else:
+                    if distance < shortest:
+                        shortest = distance
+                        row = row_x
+                        col = col_y
         coordinate = self.row_to_xy(extend, row, col)
         return coordinate
 
@@ -284,7 +308,8 @@ class Plotter:
 
 
 # Get the location from user and plot the shortest path
-def main():
+# Pass file path as arguments to function.
+def main(filepath):
     x = float(input("Enter location (as British National Grid coordinate)\nEasting: "))
     y = float(input("Northing: "))
 
@@ -294,13 +319,13 @@ def main():
     read_file = ReadFile()
     plotter = Plotter()
 
-    filepath_itn = "Material/Material/itn"
+    filepath_itn = filepath + "/" + "Material/itn"
     filename_itn = "solent_itn.json"
-    filepath_elevation = "Material/Material/elevation"
+    filepath_elevation = filepath + "/" + "Material/elevation"
     filename_elevation = "SZ.asc"
-    filepath_background = "Material/Material/background"
+    filepath_background = filepath + "/" + "Material/background"
     filename_background = "raster-50k_2724246.tif"
-    filepath_shape = "Material/Material/shape"
+    filepath_shape = filepath + "/" + "Material/shape"
     filename_shape = "isle_of_wight.shp"
 
     itn = read_file.get_itn(filepath_itn, filename_itn)
@@ -314,11 +339,12 @@ def main():
     shape_bng = shape_bng.set_geometry("geometry")  # set geomtry data
     test = UserInput(shape_bng, x, y)
     test.within_mbr()  # call function to test if point is inside island
-    start_point = (x, y)
+    start_point = (test.x, test.y)
+    print("Programme is running, please wait a moment!")
 
     start_point_buffer = find_highest.get_5kmbuffer(start_point, background)
     highest_point = find_highest.find_hightest_point(extend, filepath_elevation, filename_elevation,
-                                                     start_point_buffer)
+                                                     start_point_buffer, start_point)
 
     idx = find_itn.nodes_index(itn)
     start_node = find_itn.nearest_node(start_point, idx)
@@ -328,31 +354,14 @@ def main():
     network_weighted = find_path.add_weight(extend, itn, network_unweighted, elevation.read(1))
     shortest_path = find_path.shortest_path(start_node, end_node, network_weighted)
 
-    # Set a if statement to show larger background for location near the edge of island
-    point = Point(start_point)
-    boundary = Polygon([(430000, 80000), (430000, 95000), (465000, 95000), (465000, 8000)])
     bounds = start_point_buffer.bounds
-    extent_elevation = [bounds[0], bounds[2], bounds[1], bounds[3]]
-    if boundary.contains(point):
-        bounds = start_point_buffer.bounds
-        extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
-    elif boundary.touches(point):
-        bounds = start_point_buffer.bounds
-        extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
-    else:
-        bounds = background.bounds
-        boundary = Polygon([(bounds.left, bounds.bottom), (bounds.right, bounds.bottom),
-                            (bounds.right, bounds.top), (bounds.left, bounds.top)])
-        buffer = point.buffer(7000).intersection(boundary)
-        bounds = buffer.bounds
-        extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
-
+    extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
     fig = plt.figure(figsize=(5, 5), dpi=300)
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.OSGB())
 
     plotter.add_text(ax)
     plotter.add_background(ax, extend_back, background, bounds, extent)
-    plotter.add_elevation(ax, start_point_buffer, elevation, extent_elevation)
+    plotter.add_elevation(ax, start_point_buffer, elevation, extent)
     plotter.add_shortest_path(ax, itn, shortest_path, network_weighted)
     plotter.add_points(itn, start_node, end_node)
     plotter.add_north(ax)
@@ -363,8 +372,20 @@ def main():
 
 
 if __name__ == '__main__':
-    # Run program, print wrong message when program do not work.
+    # Use "os" library to get current work directory
+    current_work_directory = os.getcwd()
+    # Use "argparse" library to get filepath argument
+    parser = argparse.ArgumentParser(description="Welcome to Flood Emergency Planning\n"
+                                                 "Please enter file path as arguments")
+    # Get "filepath" argument, default value is current work directory.
+    parser.add_argument("-f", "--filepath",
+                        help="filepath, optional arguments, default is current work directory",
+                        default=current_work_directory)
+    args = parser.parse_args()
+    # Run program, print wrong message when program do not work
     try:
-        main()
+        main(args.filepath)
     except Exception as e:
         print(e)
+    # Programme will not shut down immediately if it do not work correctly
+    os.system("pause")
