@@ -1,7 +1,7 @@
 import numpy as np
 import rasterio
 import rasterio.mask
-from shapely.geometry import Point, Polygon, LineString
+from shapely.geometry import Point, Polygon
 
 
 class HighestPoint:
@@ -58,5 +58,13 @@ class HighestPoint:
                         row = row_x
                         col = col_y
         coordinate = self.row_to_xy(extend, row, col)
-        return coordinate
+        return coordinate, out_image, row, col
+
+    # Define a function to refind highest point if there are some parts of shortest path outside the 5km radius
+    def refind_hightest_point(self, extend, out_image, row_highest, col_highest):
+        out_image[row_highest, col_highest] = 0
+        m = np.argmax(out_image)
+        row, col = divmod(m, out_image.shape[1])
+        coordinate = self.row_to_xy(extend, row, col)
+        return coordinate, out_image, row, col
 
