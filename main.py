@@ -92,7 +92,15 @@ class HighestPoint:
                         row = row_x
                         col = col_y
         coordinate = self.row_to_xy(extend, row, col)
-        return coordinate
+        return coordinate, out_image, row, col
+
+    # Define a function to refind highest point if there are some parts of shortest path outside the 5km radius
+    def refind_hightest_point(self, extend, out_image, row_highest, col_highest):
+        out_image[row_highest, col_highest] = 0
+        m = np.argmax(out_image)
+        row, col = divmod(m, out_image.shape[1])
+        coordinate = self.row_to_xy(extend, row, col)
+        return coordinate, out_image, row, col
 
 
 class NearestITN:
@@ -343,8 +351,9 @@ def main(filepath):
     print("Programme is running, please wait a moment!")
 
     start_point_buffer = find_highest.get_5kmbuffer(start_point, background)
-    highest_point = find_highest.find_hightest_point(extend, filepath_elevation, filename_elevation,
-                                                     start_point_buffer, start_point)
+    highest_point, out_image, row_highest, col_highest = \
+        find_highest.find_hightest_point(
+            extend, filepath_elevation, filename_elevation, start_point_buffer, start_point)
 
     idx = find_itn.nodes_index(itn)
     start_node = find_itn.nearest_node(start_point, idx)
@@ -353,6 +362,35 @@ def main(filepath):
     network_unweighted = find_path.build_network(itn)
     network_weighted = find_path.add_weight(extend, itn, network_unweighted, elevation.read(1))
     shortest_path = find_path.shortest_path(start_node, end_node, network_weighted)
+
+    # Define a function to solve some special cases in northern island
+    # Determine if the shortest path cross the boundary of 5km radius
+    # If shortest path cross the boundary, delete this point, then find highest point again
+    road_links = itn["roadlinks"]
+    road = []
+    first_node = shortest_path[0]
+    for node in shortest_path[1:]:
+        link_fid = network_weighted.edges[first_node, node]['fid']
+        for i in road_links[link_fid]['coords']:
+            road.append(i)
+        first_node = node
+    path_line = LineString(road)
+    if path_line.crosses(start_point_buffer):
+        print("You are in the special area of island, it will take a long time for programme running!"
+              "Sorry about that!")
+    while path_line.crosses(start_point_buffer):
+        highest_point, out_image, row_highest, col_highest = \
+            find_highest.refind_hightest_point(extend, out_image, row_highest, col_highest)
+        end_node = find_itn.nearest_node(highest_point, idx)
+        shortest_path = find_path.shortest_path(start_node, end_node, network_weighted)
+        road = []
+        first_node = shortest_path[0]
+        for node in shortest_path[1:]:
+            link_fid = network_weighted.edges[first_node, node]['fid']
+            for i in road_links[link_fid]['coords']:
+                road.append(i)
+            first_node = node
+        path_line = LineString(road)
 
     bounds = start_point_buffer.bounds
     extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
