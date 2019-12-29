@@ -15,27 +15,55 @@ from rtree import index
 from collections import OrderedDict
 import os
 import argparse
+from tkinter import *
 
 
 class UserInput:
 
-    def __init__(self, shape, x, y):  # takes two arguments: dem file, shapefile, xy inputs
-        self.x = x
-        self.y = y
-        self.pt = Point(self.x, self.y)  # xy into shapely point
-        self.shape = shape
+    # Set GUI for user input their location
+    def __init__(self, master):
+        self.frame = master
+        self.lab = Label(self.frame, text='Please enter your location \n(as British National Grid coordinate)',
+                         font=('Arial', 14))
+        self.lab.pack()
+        self.easting = Label(self.frame, text="Easting:", font=('Arial', 12))
+        self.easting.pack()
+        self.enter_east = Entry(self.frame)
+        self.enter_east.pack()
+        self.northing = Label(self.frame, text="Northing:", font=('Arial', 12))
+        self.northing.pack()
+        self.enter_north = Entry(self.frame)
+        self.enter_north.pack()
+        self.button_sub = Button(self.frame, text="Submit", command=self.submit)
+        self.button_sub.pack()
+        self.lab_remind = Label(self.frame, text="")
+        self.lab_remind.pack()
+        self.button_quit = Button(self.frame, text="Quit", command=self.quit)
+        self.button_quit.pack()
+        self.x = None
+        self.y = None
 
     # To test if point is within island shape
     # Programme will ask you to enter location again if entered point is outside island
-    def within_mbr(self):
-        while not self.shape.contains(self.pt).all():
-            if not self.shape.touches(self.pt).all():
-                print("Input coordinate outside Isle of Wight. Application quitting.\nPlease Try Again!")
-                x = float(input("Enter location (as British National Grid coordinate)\nEasting: "))
-                y = float(input("Northing: "))
-                self.x = x
-                self.y = y
-                self.pt = Point(self.x, self.y)
+    def submit(self):
+        x = self.enter_east.get()
+        y = self.enter_north.get()
+        pt = Point(float(x), float(y))
+        shape = gpd.read_file(os.getcwd() + "/" + "Material/shape/isle_of_wight.shp")
+        shape_bng = shape.to_crs(epsg=27700)  # reproject shapefile from lat long to BNG
+        shape_bng = shape_bng.set_geometry("geometry")  # set geomtry data
+        if not shape_bng.contains(pt).all():
+            if not shape_bng.touches(pt).all():
+                self.lab_remind["text"] = "Input coordinate outside Isle of Wight.\nPlease Try Again!"
+                self.enter_east.delete(0, len(x))
+                self.enter_north.delete(0, len(y))
+        else:
+            self.x = pt.x
+            self.y = pt.y
+            self.frame.destroy()
+
+    def quit(self):
+        exit()
 
 
 class HighestPoint:
@@ -195,11 +223,6 @@ class ReadFile:
         rasterio_read = rasterio.open(file)
         return rasterio_read
 
-    def get_shape(self, filepath, filename):
-        file = filepath + "/" + filename
-        shape = gpd.read_file(file)
-        return shape
-
 
 class Plotter:
 
@@ -318,8 +341,14 @@ class Plotter:
 # Get the location from user and plot the shortest path
 # Pass file path as arguments to function.
 def main(filepath):
-    x = float(input("Enter location (as British National Grid coordinate)\nEasting: "))
-    y = float(input("Northing: "))
+    # Set GUI for user input their location
+    root = Tk()
+    root.title("Flood Emergency Planning")
+    root.geometry('400x300')
+    pt = UserInput(root)
+    root.mainloop()
+    start_point = (pt.x, pt.y)
+    print("Programme is running, please wait a moment!")
 
     find_highest = HighestPoint()
     find_itn = NearestITN()
@@ -333,22 +362,12 @@ def main(filepath):
     filename_elevation = "SZ.asc"
     filepath_background = filepath + "/" + "Material/background"
     filename_background = "raster-50k_2724246.tif"
-    filepath_shape = filepath + "/" + "Material/shape"
-    filename_shape = "isle_of_wight.shp"
 
     itn = read_file.get_itn(filepath_itn, filename_itn)
     extend = read_file.get_extend(filepath_elevation, filename_elevation)
     extend_back = read_file.get_extend(filepath_background, filename_background)
     background = read_file.rasterio_read(filepath_background, filename_background)
     elevation = read_file.rasterio_read(filepath_elevation, filename_elevation)
-    shape = read_file.get_shape(filepath_shape, filename_shape)
-
-    shape_bng = shape.to_crs(epsg=27700)  # reproject shapefile from lat long to BNG
-    shape_bng = shape_bng.set_geometry("geometry")  # set geomtry data
-    test = UserInput(shape_bng, x, y)
-    test.within_mbr()  # call function to test if point is inside island
-    start_point = (test.x, test.y)
-    print("Programme is running, please wait a moment!")
 
     start_point_buffer = find_highest.get_5kmbuffer(start_point, background)
     highest_point, out_image, row_highest, col_highest = \
